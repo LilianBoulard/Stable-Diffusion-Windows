@@ -79,6 +79,8 @@ if __name__ == "__main__":
         ]
     }
 
+    assert flattened_args['prompt'] != '', 'Require a prompt !'
+
     req_args = {
         arg: value
         for arg, value in flattened_args.items()
