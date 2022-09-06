@@ -1,15 +1,24 @@
 """
 Interface script for Stable Diffusion.
 
-See README.
+Refer to the original blog post for instructions:
+https://lilian-boulard.notion.site/Self-host-Stable-Diffusion-on-Windows-31f7c407d2bd47d4b5ff389406dc27a3
+and to the project's repository for more information:
+https://github.com/LilianBoulard/Stable-Diffusion-Windows
 """
 
 import base64
 import requests
 
 from json import JSONEncoder
+from datetime import datetime
 from urllib.parse import quote_plus
 from argparse import ArgumentParser
+
+
+def now() -> str:
+    _now = datetime.now()
+    return f"{_now.year}-{_now.month}-{_now.day} {_now.hour}:{_now.minute}:{_now.second}"
 
 
 if __name__ == "__main__":
@@ -56,12 +65,13 @@ if __name__ == "__main__":
         help='Random seed. Leave blank to randomize the seed',
     )
 
-    _args = _parser.parse_args()
+    _parser.add_argument(
+        '--times', type=int, nargs=1, required=False, default=1,
+        help='How many images we will generate using these parameters. '
+             'Note: if "seed" is also passed, this will only generate one. '
+    )
 
-    # Check that values are consistent
-    # TODO: width, height
-    assert 1 <= _args.num_inference_steps <= 500
-    assert 1 <= _args.guidance_scale <= 20
+    _args = _parser.parse_args()
 
     flattened_args = {
         arg: _args.__getattribute__(arg)[0] if isinstance(_args.__getattribute__(arg), list) else _args.__getattribute__(arg)
@@ -76,10 +86,26 @@ if __name__ == "__main__":
             'num_inference_steps',
             'guidance_scale',
             'seed',
+            'times',
         ]
     }
 
+    # Check that values are consistent
+    assert (
+        (flattened_args['height'] <= 1024 and flattened_args['width'] <= 768)
+        or
+        (flattened_args['height'] <= 768 and flattened_args['width'] <= 1024)
+    )
     assert flattened_args['prompt'] != '', 'Require a prompt !'
+    assert 1 <= flattened_args['num_inference_steps'] <= 500
+    assert 1 <= flattened_args['guidance_scale'] <= 20
+    assert flattened_args['num_outputs'] in [1, 4]
+    if flattened_args['seed'] is not None and flattened_args['times'] != 1:
+        print(f'A seed ({flattened_args["seed"]} was passed, '
+              f'but {flattened_args["times"]} images were requested. '
+              f'As this would generate the same image multiple times, '
+              f'"times" will be ignored and a single image will be generated. ')
+        flattened_args['times'] = 1
 
     req_args = {
         arg: value
@@ -87,17 +113,26 @@ if __name__ == "__main__":
         if value is not None and value != ''
     }
 
-    data = requests.post(
-        url='http://localhost:5000/predictions',
-        headers={'Content-Type': 'application/json'},
-        data=JSONEncoder().encode({'input': req_args})
-    ).json()
-
-    if data["status"] == "succeeded":
-        for i, image_data in enumerate(data['output']):
-            image_info, image_content = image_data.split(',')
-            byte_data = base64.b64decode(image_content)
-            mime, _ = image_info.split(';')
-            _, extension = mime.split('/')
-            with open(f'{i}-{quote_plus(_args.prompt[0])}.{extension}', 'wb') as fl:
-                fl.write(byte_data)
+    url = 'http://localhost:5000/predictions'
+    for _ in range(flattened_args['times']):
+        try:
+            data = requests.post(
+                url=url,
+                headers={'Content-Type': 'application/json'},
+                data=JSONEncoder().encode({'input': req_args})
+            ).json()
+        except requests.exceptions.ConnectionError:
+            print(f'Could not connect to the server ({url!r}). '
+                  f'Please ensure the docker container is up and running. ')
+        else:
+            # Extract the image information and save them in a file.
+            if "status" in data and data["status"] == "succeeded":
+                for i, image_data in enumerate(data['output']):
+                    image_info, image_content = image_data.split(',')
+                    byte_data = base64.b64decode(image_content)
+                    mime, _ = image_info.split(';')
+                    _, extension = mime.split('/')
+                    with open(f'{quote_plus(_args.prompt[0])} {now()}.{extension}', 'wb') as fl:
+                        fl.write(byte_data)
+            else:
+                print("Error:", data)
